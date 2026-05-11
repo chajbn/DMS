@@ -14,11 +14,12 @@ import numpy as np
 from face_mesh_detector import FaceMeshDetector
 from head_pose_estimator import HeadPoseEstimator
 from gaze_estimator import GazeEstimator
+from mouth_detector import MouthDetector
 from distraction_detector import DistractionDetector, DistractionState
 
 
 def draw_results(image, pose, gaze_result, state, details, landmarks_px,
-                 head_pose_est, gaze_est):
+                 head_pose_est, gaze_est, mouth_det):
     """Annotate the image with all detection results."""
     h, w = image.shape[:2]
     result = image.copy()
@@ -38,6 +39,9 @@ def draw_results(image, pose, gaze_result, state, details, landmarks_px,
 
     # Draw gaze direction
     gaze_est.draw_gaze(result, landmarks_px, gaze_result)
+
+    # Draw mouth landmarks
+    mouth_det.draw(result, landmarks_px)
 
     # Status bar at top
     state_colors = {
@@ -65,6 +69,15 @@ def draw_results(image, pose, gaze_result, state, details, landmarks_px,
     if 'ear' in details:
         ear = details['ear']
         lines.append(f"EAR   | {ear:.3f}  {'OPEN' if ear >= 0.20 else 'CLOSED'}")
+    if 'mar' in details:
+        mar = details['mar']
+        if mar >= 0.65:
+            mar_status = "YAWN"
+        elif mar >= 0.35:
+            mar_status = "OPEN"
+        else:
+            mar_status = "CLOSED"
+        lines.append(f"MAR   | {mar:.3f}  {mar_status}")
 
     for line in lines:
         cv2.putText(result, line, (15, y0), cv2.FONT_HERSHEY_SIMPLEX,
@@ -108,7 +121,7 @@ def generate_synthetic_face(size=(640, 480)):
     return img
 
 
-def process_image(image, detector, head_pose_est, gaze_est, dms):
+def process_image(image, detector, head_pose_est, gaze_est, mouth_det, dms):
     """Run the full DMS pipeline on a single image."""
     h, w = image.shape[:2]
     face_data = detector.detect(image)
@@ -116,7 +129,8 @@ def process_image(image, detector, head_pose_est, gaze_est, dms):
     pose = head_pose_est.estimate(landmarks_px, w, h,
                                   transform=face_data.get('transform'))
     gaze_result = gaze_est.estimate(face_data)
-    state, details = dms.update(pose, gaze_result)
+    mar = mouth_det.compute_mar(landmarks_px)
+    state, details = dms.update(pose, gaze_result, mar)
 
     # Print results to console
     print("-" * 50)
@@ -132,12 +146,17 @@ def process_image(image, detector, head_pose_est, gaze_est, dms):
         print(f"  EAR:         {gaze_result['avg_ear']:.3f}  (blink L:{gaze_result.get('blink_left',0):.2f} R:{gaze_result.get('blink_right',0):.2f})")
     else:
         print("  Gaze:        not detected")
+    if mar is not None:
+        mar_label = "YAWN" if mar >= 0.65 else "OPEN" if mar >= 0.35 else "CLOSED"
+        print(f"  MAR:         {mar:.3f}  ({mar_label})")
+    else:
+        print("  MAR:         not detected")
 
     print(f"  State:       {state.value}")
     print("-" * 50)
 
     annotated = draw_results(image, pose, gaze_result, state, details,
-                             landmarks_px, head_pose_est, gaze_est)
+                             landmarks_px, head_pose_est, gaze_est, mouth_det)
     return annotated, details
 
 
@@ -149,6 +168,7 @@ def main():
     detector = FaceMeshDetector(max_num_faces=1, min_detection_confidence=0.5)
     head_pose_est = HeadPoseEstimator()
     gaze_est = GazeEstimator()
+    mouth_det = MouthDetector()
     dms = DistractionDetector()
 
     image_path = None
@@ -182,7 +202,7 @@ def main():
         print("       python demo.py --gen  (use synthetic test image)")
         sys.exit(1)
 
-    annotated, details = process_image(image, detector, head_pose_est, gaze_est, dms)
+    annotated, details = process_image(image, detector, head_pose_est, gaze_est, mouth_det, dms)
 
     # Save result
     output_path = "demo_output.jpg"
